@@ -7,7 +7,7 @@
     "db:start": "tsx scripts/db.ts start",
     "dev": "tsx watch src/index.ts",
     "build": "prisma generate && tsc -p tsconfig.json",
-    "start": "node scripts/preflight.mjs && prisma migrate deploy && node dist/src/index.js",
+    "start": "node scripts/preflight.mjs && prisma migrate deploy && node scripts/seed-if-empty.mjs && node dist/src/index.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "prisma:generate": "prisma generate",
     "migrate": "prisma migrate dev",
