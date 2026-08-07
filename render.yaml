@@ -1,21 +1,29 @@
 # Render blueprint — https://render.com/docs/blueprint-spec
 #
-# Creates three things from this one file:
-#   leo-ink-db   PostgreSQL 16
+# Creates two services from this one file:
 #   leo-ink-api  Express API — runs `prisma migrate deploy` on every boot
 #   leo-ink-web  the React build, served as a CDN-backed static site
 #
 # This repo is an npm workspace, so both services build from the REPO ROOT
 # (`npm ci` once, then `--workspace <name>`). Setting rootDir per service would
 # install each package in isolation and break the shared lockfile.
-
-databases:
-  - name: leo-ink-db
-    databaseName: leoink
-    user: leoink
-    plan: free # 1 GB, EXPIRES AFTER 30 DAYS — move to a paid plan to keep the data
-    region: singapore # closest Render region to India; services must match
-    postgresMajorVersion: "16"
+#
+# THE DATABASE IS NOT CREATED HERE. Render permits only one free PostgreSQL per
+# account, so a `databases:` block fails the whole sync if you already have one.
+# Instead DATABASE_URL is marked `sync: false` and you paste it once at deploy
+# time — which works whichever way you get a database:
+#
+#   Reusing a Postgres you already have (free, nothing to delete):
+#     take its Internal Database URL and append a dedicated schema —
+#     postgresql://…/dbname?schema=leoink
+#     Leo Ink's 35 tables land in the `leoink` schema; anything already in
+#     `public` is untouched. Verified, not assumed.
+#
+#   Giving Leo Ink its own database:
+#     create it in Render (New → PostgreSQL, region Singapore for India), then
+#     paste its Internal Database URL as-is.
+#
+# Either way `prisma migrate deploy` creates the schema and tables on first boot.
 
 services:
   # ── API ────────────────────────────────────────────────────────────────────
@@ -30,10 +38,9 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
+      # Paste this in the Render dashboard — see the note at the top of this file.
       - key: DATABASE_URL
-        fromDatabase:
-          name: leo-ink-db
-          property: connectionString
+        sync: false
       - key: JWT_SECRET
         generateValue: true # Render generates it; it is never in the repo
       - key: TRIAL_DAYS
