@@ -25,11 +25,11 @@
   "engines": {
     "node": ">=20"
   },
+  "//allowScripts": "npm 11 blocks install scripts unless approved here. Pinned to exact versions, which means a CI runner resolving a different patch would have its scripts blocked — Prisma would then ship without its query engine. Left unpinned deliberately.",
   "allowScripts": {
-    "prisma@6.19.3": true,
-    "@prisma/client@6.19.3": true,
-    "@prisma/engines@6.19.3": true,
-    "esbuild@0.28.1": true,
-    "@embedded-postgres/windows-x64@16.14.0-beta.17": true
+    "prisma": true,
+    "@prisma/client": true,
+    "@prisma/engines": true,
+    "esbuild": true
   }
 }

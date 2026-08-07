@@ -11,9 +11,15 @@
 #   Name           leo-ink-api
 #   Region         Singapore          Branch  main       Root directory  (blank)
 #   Runtime        Node
-#   Build command  npm ci && npm run build --workspace server
+#   Build command  npm ci --include=dev && npm run build --workspace server
 #   Start command  npm run start --workspace server
 #   Health check   /api/health
+#
+# `--include=dev` is REQUIRED, not tidiness. Render exposes NODE_ENV=production
+# during the build, and npm then omits devDependencies — which is where
+# typescript, the prisma CLI and @types/node live. Without it `tsc` dies with
+# TS2688 "cannot find type definition file for 'node'" and the build exits 2.
+# (leo-ink-web builds fine because it sets no NODE_ENV.)
 #   Env            DATABASE_URL, JWT_SECRET, CORS_ORIGIN, NODE_ENV, TRIAL_DAYS
 #                  (values described below)
 #
@@ -47,7 +53,7 @@
 #    runtime: node
 #    plan: free            # spins down after 15 min idle; next request takes ~50 s
 #    region: singapore
-#    buildCommand: npm ci && npm run build --workspace server
+#    buildCommand: npm ci --include=dev && npm run build --workspace server
 #    startCommand: npm run start --workspace server
 #    healthCheckPath: /api/health
 #    envVars:
