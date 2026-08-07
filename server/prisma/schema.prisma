@@ -1,0 +1,1183 @@
+// Leo Ink — Phase 1 (MVP) physical data model
+// Recommended artifact per FRD §15.6 ("physical ERD / Prisma schema for the Phase-1 core").
+//
+// Cross-cutting rules encoded here:
+//   BR-1  Money precision  — every monetary/tax value is Decimal(18,2); rates Decimal(18,4). Never Float.
+//   BR-4  Tenant isolation — every table carries tenantId; RLS policies are added in migrations/rls.sql.
+//   BR-11 Soft delete      — masters carry `active`; transactional docs are voided, not deleted.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ENUMS
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum TenantStatus {
+  SETUP
+  LIVE
+  SUSPENDED
+}
+
+enum SubscriptionStatus {
+  TRIAL
+  ACTIVE
+  EXPIRED
+  CANCELLED
+}
+
+/// §2.3 predefined roles (FR-715)
+enum UserRole {
+  OWNER_ADMIN
+  ACCOUNTS
+  SALES_COUNTER
+  PRODUCTION_MANAGER
+  OPERATOR
+  DELIVERY
+}
+
+enum UserStatus {
+  INVITED
+  ACTIVE
+  DISABLED
+}
+
+enum FyStatus {
+  OPEN
+  CLOSED
+}
+
+/// FR-106 — one numbering series per (docType, branch, fy)
+enum DocType {
+  QUOTATION
+  JOBCARD
+  INVOICE
+  PROFORMA
+  DELIVERY_CHALLAN
+  PURCHASE_ORDER
+  GRN
+  CREDIT_NOTE
+  DEBIT_NOTE
+  RECEIPT
+  PAYMENT
+}
+
+enum ResetPolicy {
+  YEARLY
+  NEVER
+}
+
+enum HsnType {
+  HSN
+  SAC
+}
+
+/// FR-112
+enum RoundingMode {
+  NORMAL
+  UP
+  DOWN
+  NONE
+}
+
+/// FR-113
+enum CustomerType {
+  REGISTERED
+  UNREGISTERED
+  COMPOSITION
+  SEZ
+  EXPORT
+}
+
+/// FR-116
+enum MaterialCategory {
+  PAPER
+  BOARD
+  MEDIA
+  INK
+  PLATE
+  OTHER
+}
+
+/// Phase-1 verticals (§15.1)
+enum Vertical {
+  FLEX_LARGE_FORMAT
+  OFFSET
+  DIGITAL
+  SCREEN
+}
+
+enum EnquirySource {
+  WALK_IN
+  PHONE
+  WHATSAPP
+  EMAIL
+  WEB_FORM
+}
+
+enum EnquiryStatus {
+  NEW
+  CONTACTED
+  QUOTED
+  WON
+  LOST
+}
+
+enum FollowUpStatus {
+  OPEN
+  CLOSED
+}
+
+/// FR-230
+enum QuoteStatus {
+  DRAFT
+  SENT
+  WON
+  LOST
+  EXPIRED
+}
+
+enum ShareChannel {
+  WHATSAPP
+  EMAIL
+  SMS
+}
+
+/// FR-213 — markup on cost vs target margin
+enum MarkupMode {
+  MARKUP
+  MARGIN
+}
+
+/// FR-212 — provenance of the rate actually used on a line
+enum RateSource {
+  LINE_OVERRIDE
+  MATERIAL_MASTER
+  RATE_CARD
+}
+
+/// FR-309 roll-up status
+enum JobStatus {
+  OPEN
+  IN_PROGRESS
+  DONE
+  CANCELLED
+}
+
+enum Priority {
+  LOW
+  NORMAL
+  HIGH
+}
+
+enum StageStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+  SKIPPED
+}
+
+enum JobEventType {
+  CREATED
+  STAGE_ADVANCED
+  STAGE_REVERTED
+  ASSIGNED
+  REASSIGNED
+  STATUS_CHANGED
+  PRIORITY_CHANGED
+  DELIVERY_DATE_CHANGED
+  SPEC_UPDATED
+  TICKET_PRINTED
+}
+
+enum EventSource {
+  WEB
+  SCAN
+  SYSTEM
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §3.1 — TENANT, FIRM PROFILE, BRANCH, BANK
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// FR-100/FR-101 — the print shop (one tenant = one firm)
+model Tenant {
+  id                String       @id @default(uuid())
+  legalName         String
+  tradeName         String?
+  constitution      String? // Proprietorship / Partnership / LLP / Pvt Ltd ...
+  gstin             String?
+  pan               String?
+  /// Derived from GSTIN digits 1-2 — the firm's home state for BR-2
+  homeStateCode     String?
+  addressLine1      String?
+  addressLine2      String?
+  city              String?
+  stateCode         String?
+  pincode           String?
+  email             String?
+  phone             String?
+  website           String?
+  logoUrl           String?
+  baseCurrency      String       @default("INR")
+  decimalPrecision  Int          @default(2)
+  /// Tenant is not GST-registered → suppress tax lines (FR-224)
+  gstRegistered     Boolean      @default(true)
+  status            TenantStatus @default(SETUP)
+  /// FR-100 — set once the wizard's mandatory steps are complete
+  goLiveReady       Boolean      @default(false)
+  wizardStep        String?
+  /// FR-213 tenant default markup used when a quote line carries none
+  defaultMarkupPct  Decimal      @default(0) @db.Decimal(9, 4)
+  defaultMarkupMode MarkupMode   @default(MARKUP)
+  /// FR-230 default quote validity
+  quoteValidityDays Int          @default(15)
+  /// FR-214 discount above this % flags the quote for approval
+  maxDiscountPct    Decimal      @default(100) @db.Decimal(9, 4)
+  /// FR-211 optional round-up-to-nearest-foot rule (default off)
+  roundUpFeet       Boolean      @default(false)
+  /// Default vertical for the 15-second quick jobcard (FR-301)
+  defaultVertical   Vertical     @default(FLEX_LARGE_FORMAT)
+  timezone          String       @default("Asia/Kolkata")
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+
+  branches         Branch[]
+  bankAccounts     BankAccount[]
+  financialYears   FinancialYear[]
+  numberingSeries  NumberingSeries[]
+  taxRates         TaxRate[]
+  hsnSacCodes      HsnSacCode[]
+  uoms             UnitOfMeasure[]
+  termsBlocks      TermsBlock[]
+  roundingRules    RoundingRule[]
+  users            User[]
+  customers        Customer[]
+  suppliers        Supplier[]
+  products         Product[]
+  materials        MaterialItem[]
+  rateCards        RateCard[]
+  enquiries        Enquiry[]
+  followUps        FollowUp[]
+  quotes           Quote[]
+  jobcards         Jobcard[]
+  workflows        WorkflowTemplate[]
+  auditLogs        AuditLog[]
+  subscription     Subscription?
+  importBatches    ImportBatch[]
+  messageLogs      MessageLog[]
+
+  @@map("tenants")
+}
+
+/// FR-103 / FR-118 — place of business; stamps every document
+model Branch {
+  id                 String   @id @default(uuid())
+  tenantId           String
+  branchCode         String
+  name               String
+  gstin              String?
+  stateCode          String
+  addressLine1       String?
+  addressLine2       String?
+  city               String?
+  pincode            String?
+  phone              String?
+  isHeadOffice       Boolean  @default(false)
+  active             Boolean  @default(true)
+  defaultBankAccount String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  tenant          Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  numberingSeries NumberingSeries[]
+  quotes          Quote[]
+  jobcards        Jobcard[]
+  userLinks       UserBranch[]
+
+  @@unique([tenantId, branchCode])
+  @@index([tenantId])
+  @@map("branches")
+}
+
+/// FR-102
+model BankAccount {
+  id          String   @id @default(uuid())
+  tenantId    String
+  accountName String
+  accountNo   String
+  ifsc        String
+  bankName    String
+  branchName  String?
+  upiVpa      String?
+  isDefault   Boolean  @default(false)
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@map("bank_accounts")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §3.2 / §3.3 — FINANCIAL YEAR & NUMBERING
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// FR-104 — India Apr–Mar
+model FinancialYear {
+  id        String   @id @default(uuid())
+  tenantId  String
+  fyLabel   String // 2026-27
+  startDate DateTime @db.Date
+  endDate   DateTime @db.Date
+  status    FyStatus @default(OPEN)
+  isCurrent Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant          Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  numberingSeries NumberingSeries[]
+  quotes          Quote[]
+  jobcards        Jobcard[]
+
+  @@unique([tenantId, fyLabel])
+  @@index([tenantId])
+  @@map("financial_years")
+}
+
+/// FR-106 / FR-107 — gap-free, FY-resetting, concurrency-safe serials
+model NumberingSeries {
+  id          String      @id @default(uuid())
+  tenantId    String
+  docType     DocType
+  branchId    String?
+  fyId        String?
+  prefix      String      @default("")
+  suffix      String      @default("")
+  startNumber Int         @default(1)
+  nextNumber  Int         @default(1)
+  padding     Int         @default(4)
+  resetPolicy ResetPolicy @default(YEARLY)
+  active      Boolean     @default(true)
+  lastIssuedAt DateTime?
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  tenant Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branch Branch?        @relation(fields: [branchId], references: [id])
+  fy     FinancialYear? @relation(fields: [fyId], references: [id])
+
+  @@unique([tenantId, docType, branchId, fyId])
+  @@index([tenantId])
+  @@map("numbering_series")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §3.4 — CENTRAL CONFIGURATION
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// FR-108
+model TaxRate {
+  id            String   @id @default(uuid())
+  tenantId      String
+  name          String
+  gstPct        Decimal  @db.Decimal(9, 4)
+  cessPct       Decimal  @default(0) @db.Decimal(9, 4)
+  effectiveFrom DateTime @db.Date
+  active        Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  tenant      Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  hsnSacCodes HsnSacCode[]
+  products    Product[]
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
+  @@map("tax_rates")
+}
+
+/// FR-109 / FR-117
+model HsnSacCode {
+  id               String   @id @default(uuid())
+  tenantId         String
+  code             String
+  type             HsnType
+  description      String?
+  defaultTaxRateId String?
+  defaultUomId     String?
+  active           Boolean  @default(true)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  tenant         Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  defaultTaxRate TaxRate?       @relation(fields: [defaultTaxRateId], references: [id])
+  defaultUom     UnitOfMeasure? @relation(fields: [defaultUomId], references: [id])
+  products       Product[]
+  materials      MaterialItem[]
+
+  @@unique([tenantId, code])
+  @@index([tenantId])
+  @@map("hsn_sac_codes")
+}
+
+/// FR-110
+model UnitOfMeasure {
+  id           String   @id @default(uuid())
+  tenantId     String
+  uomCode      String
+  name         String
+  symbol       String?
+  baseUomId    String?
+  factorToBase Decimal  @default(1) @db.Decimal(18, 6)
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  tenant       Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  baseUom      UnitOfMeasure?  @relation("UomBase", fields: [baseUomId], references: [id])
+  derivedUoms  UnitOfMeasure[] @relation("UomBase")
+  hsnDefaults  HsnSacCode[]
+  products     Product[]
+  materials    MaterialItem[]
+  rateCards    RateCard[]
+
+  @@unique([tenantId, uomCode])
+  @@index([tenantId])
+  @@map("units_of_measure")
+}
+
+/// FR-111
+model TermsBlock {
+  id        String   @id @default(uuid())
+  tenantId  String
+  title     String
+  body      String
+  appliesTo DocType[]
+  isDefault Boolean  @default(false)
+  sortOrder Int      @default(0)
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@map("terms_blocks")
+}
+
+/// FR-112
+model RoundingRule {
+  id        String       @id @default(uuid())
+  tenantId  String
+  /// null scope = global default
+  scope     DocType?
+  mode      RoundingMode @default(NORMAL)
+  precision Int          @default(0) // 0 = whole rupee, 2 = paise
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, scope])
+  @@index([tenantId])
+  @@map("rounding_rules")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §3.5 — MASTER DATA
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// FR-119 / FR-715
+model User {
+  id            String     @id @default(uuid())
+  tenantId      String
+  name          String
+  email         String
+  phone         String?
+  passwordHash  String?
+  role          UserRole
+  status        UserStatus @default(ACTIVE)
+  /// FR-717 — Owner/Admin may hold all-branch access
+  allBranches   Boolean    @default(false)
+  lastLoginAt   DateTime?
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+
+  tenant           Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branches         UserBranch[]
+  enquiries        Enquiry[]          @relation("EnquiryAssignee")
+  followUps        FollowUp[]         @relation("FollowUpAssignee")
+  auditLogs        AuditLog[]
+  stageAssignments JobStageProgress[] @relation("StageOperator")
+  jobEvents        JobEvent[]
+
+  @@unique([tenantId, email])
+  @@index([tenantId])
+  @@map("users")
+}
+
+model UserBranch {
+  userId   String
+  branchId String
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  @@id([userId, branchId])
+  @@map("user_branches")
+}
+
+/// FR-113 / FR-201
+model Customer {
+  id                 String       @id @default(uuid())
+  tenantId           String
+  name               String
+  customerType       CustomerType @default(UNREGISTERED)
+  gstin              String?
+  pan                String?
+  /// BR-2 — drives CGST/SGST vs IGST on every downstream document
+  placeOfSupplyState String
+  billingAddress     String?
+  billingCity        String?
+  billingPincode     String?
+  phone              String
+  email              String?
+  creditDays         Int          @default(0)
+  creditLimit        Decimal      @default(0) @db.Decimal(18, 2)
+  openingBalance     Decimal      @default(0) @db.Decimal(18, 2)
+  active             Boolean      @default(true)
+  createdAt          DateTime     @default(now())
+  updatedAt          DateTime     @updatedAt
+
+  tenant            Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  contacts          CustomerContact[]
+  shippingAddresses ShippingAddress[]
+  enquiries         Enquiry[]
+  quotes            Quote[]
+  jobcards          Jobcard[]
+
+  @@index([tenantId])
+  @@index([tenantId, phone])
+  @@map("customers")
+}
+
+model CustomerContact {
+  id         String   @id @default(uuid())
+  tenantId   String
+  customerId String
+  name       String
+  phone      String?
+  email      String?
+  role       String?
+  isPrimary  Boolean  @default(false)
+  createdAt  DateTime @default(now())
+
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@index([customerId])
+  @@map("customer_contacts")
+}
+
+model ShippingAddress {
+  id         String   @id @default(uuid())
+  tenantId   String
+  customerId String
+  label      String?
+  address    String
+  city       String?
+  stateCode  String
+  pincode    String?
+  createdAt  DateTime @default(now())
+
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@index([customerId])
+  @@map("shipping_addresses")
+}
+
+/// FR-114
+model Supplier {
+  id                 String   @id @default(uuid())
+  tenantId           String
+  name               String
+  gstin              String?
+  pan                String?
+  address            String?
+  placeOfSupplyState String
+  paymentTermDays    Int      @default(0)
+  openingBalance     Decimal  @default(0) @db.Decimal(18, 2)
+  phone              String?
+  email              String?
+  active             Boolean  @default(true)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@map("suppliers")
+}
+
+/// FR-115 — sellable finished product / SKU
+model Product {
+  id           String   @id @default(uuid())
+  tenantId     String
+  skuCode      String
+  name         String
+  vertical     Vertical
+  defaultSpecs Json?
+  hsnSacId     String?
+  defaultUomId String?
+  taxRateId    String?
+  defaultRate  Decimal  @default(0) @db.Decimal(18, 4)
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  tenant     Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  hsnSac     HsnSacCode?    @relation(fields: [hsnSacId], references: [id])
+  defaultUom UnitOfMeasure? @relation(fields: [defaultUomId], references: [id])
+  taxRate    TaxRate?       @relation(fields: [taxRateId], references: [id])
+
+  @@unique([tenantId, skuCode])
+  @@index([tenantId])
+  @@map("products")
+}
+
+/// FR-116 / FR-212 — media & raw material master; the price source for every flex estimate
+model MaterialItem {
+  id           String           @id @default(uuid())
+  tenantId     String
+  itemCode     String
+  name         String
+  category     MaterialCategory
+  gsm          Int?
+  size         String?
+  rollWidthFt  Decimal?         @db.Decimal(18, 4)
+  uomId        String
+  hsnSacId     String?
+  /// FR-212 — selling rate per UOM (₹/sq.ft for media). Null = no active rate → auto-pricing blocked.
+  sellingRate  Decimal?         @db.Decimal(18, 4)
+  costRate     Decimal?         @db.Decimal(18, 4)
+  /// FR-211 — per-media minimum charge
+  minCharge    Decimal          @default(0) @db.Decimal(18, 2)
+  gstPct       Decimal?         @db.Decimal(9, 4)
+  reorderLevel Decimal          @default(0) @db.Decimal(18, 4)
+  active       Boolean          @default(true)
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+
+  tenant     Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  uom        UnitOfMeasure @relation(fields: [uomId], references: [id])
+  hsnSac     HsnSacCode?   @relation(fields: [hsnSacId], references: [id])
+  quoteLines QuoteLine[]
+
+  @@unique([tenantId, itemCode])
+  @@index([tenantId])
+  @@map("material_items")
+}
+
+/// FR-216 — published price list for instant quoting
+model RateCard {
+  id            String   @id @default(uuid())
+  tenantId      String
+  itemName      String
+  uomId         String
+  publishedRate Decimal  @db.Decimal(18, 4)
+  hsnSac        String?
+  gstPct        Decimal  @db.Decimal(9, 4)
+  minCharge     Decimal  @default(0) @db.Decimal(18, 2)
+  active        Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  tenant Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  uom    UnitOfMeasure @relation(fields: [uomId], references: [id])
+
+  @@unique([tenantId, itemName])
+  @@index([tenantId])
+  @@map("rate_cards")
+}
+
+/// FR-120 / FR-121
+model ImportBatch {
+  id              String   @id @default(uuid())
+  tenantId        String
+  entityType      String
+  fileName        String?
+  rowCount        Int      @default(0)
+  accepted        Int      @default(0)
+  rejected        Int      @default(0)
+  errorReport     Json?
+  status          String   @default("COMPLETED")
+  createdAt       DateTime @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@map("import_batches")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §4.1 — CRM
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// FR-200
+model Enquiry {
+  id          String        @id @default(uuid())
+  tenantId    String
+  source      EnquirySource
+  customerId  String?
+  contactName String
+  phone       String
+  email       String?
+  vertical    Vertical
+  description String?
+  status      EnquiryStatus @default(NEW)
+  lostReason  String?
+  assignedTo  String?
+  receivedAt  DateTime      @default(now())
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  tenant   Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  customer Customer?  @relation(fields: [customerId], references: [id])
+  assignee User?      @relation("EnquiryAssignee", fields: [assignedTo], references: [id])
+  quotes   Quote[]
+  followUps FollowUp[]
+
+  @@index([tenantId])
+  @@index([tenantId, phone])
+  @@map("enquiries")
+}
+
+/// FR-203 — polymorphic follow-up on an enquiry OR a quote (exactly one parent)
+model FollowUp {
+  id         String         @id @default(uuid())
+  tenantId   String
+  enquiryId  String?
+  quoteId    String?
+  dueAt      DateTime
+  note       String
+  assignedTo String
+  status     FollowUpStatus @default(OPEN)
+  outcome    String?
+  closedAt   DateTime?
+  notifiedAt DateTime?
+  createdAt  DateTime       @default(now())
+  updatedAt  DateTime       @updatedAt
+
+  tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  enquiry  Enquiry? @relation(fields: [enquiryId], references: [id], onDelete: Cascade)
+  quote    Quote?   @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+  assignee User     @relation("FollowUpAssignee", fields: [assignedTo], references: [id])
+
+  @@index([tenantId])
+  @@index([tenantId, assignedTo, status])
+  @@map("follow_ups")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §4.3 / §4.4 — QUOTATION
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Quote {
+  id                 String      @id @default(uuid())
+  tenantId           String
+  branchId           String
+  fyId               String
+  /// FR-230 — allocated at first finalize/send, never on draft (BR-3)
+  quoteNo            String?
+  quoteDate          DateTime    @db.Date
+  customerId         String
+  enquiryId          String?
+  /// FR-224 — overridable per quote; mandatory before Send
+  placeOfSupplyState String?
+  supplierStateCode  String
+  isInterstate       Boolean     @default(false)
+  status             QuoteStatus @default(DRAFT)
+  validUntil         DateTime?   @db.Date
+  lostReason         String?
+
+  // FR-214 document-level discount
+  docDiscountPct Decimal @default(0) @db.Decimal(9, 4)
+  docDiscountAmt Decimal @default(0) @db.Decimal(18, 2)
+
+  // Totals — all produced by the shared pricing engine (FR-210)
+  subtotal       Decimal @default(0) @db.Decimal(18, 2)
+  discountTotal  Decimal @default(0) @db.Decimal(18, 2)
+  taxableValue   Decimal @default(0) @db.Decimal(18, 2)
+  cgst           Decimal @default(0) @db.Decimal(18, 2)
+  sgst           Decimal @default(0) @db.Decimal(18, 2)
+  igst           Decimal @default(0) @db.Decimal(18, 2)
+  cess           Decimal @default(0) @db.Decimal(18, 2)
+  roundOff       Decimal @default(0) @db.Decimal(18, 2)
+  grandTotal     Decimal @default(0) @db.Decimal(18, 2)
+  amountInWords  String?
+  /// FR-210 — stamped so a converted invoice reproduces the quote's numbers
+  engineVersion  String?
+  /// FR-214 — discount above tenant threshold
+  needsApproval  Boolean @default(false)
+  approvedBy     String?
+  approvedAt     DateTime?
+
+  notes      String?
+  terms      String?
+  clonedFrom String?
+  sentAt     DateTime?
+  sentVia    ShareChannel?
+  wonAt      DateTime?
+  createdBy  String?
+  createdAt  DateTime      @default(now())
+  updatedAt  DateTime      @updatedAt
+
+  tenant    Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branch    Branch        @relation(fields: [branchId], references: [id])
+  fy        FinancialYear @relation(fields: [fyId], references: [id])
+  customer  Customer      @relation(fields: [customerId], references: [id])
+  enquiry   Enquiry?      @relation(fields: [enquiryId], references: [id])
+  source    Quote?        @relation("QuoteClone", fields: [clonedFrom], references: [id])
+  clones    Quote[]       @relation("QuoteClone")
+  lines     QuoteLine[]
+  followUps FollowUp[]
+  jobcards  Jobcard[]
+  shares    MessageLog[]
+
+  @@unique([tenantId, quoteNo])
+  @@index([tenantId])
+  @@index([tenantId, status])
+  @@map("quotes")
+}
+
+model QuoteLine {
+  id          String  @id @default(uuid())
+  tenantId    String
+  quoteId     String
+  lineNo      Int
+  description String
+  /// FR-221 — the captured job spec (size/substrate/gsm/colours/sides/lamination/finishing)
+  specJson    Json?
+  hsnSac      String?
+  isService   Boolean @default(true)
+
+  // Quantity / dimensions (FR-211)
+  qty       Decimal  @default(1) @db.Decimal(18, 4)
+  uomCode   String   @default("NOS")
+  heightFt  Decimal? @db.Decimal(18, 4)
+  widthFt   Decimal? @db.Decimal(18, 4)
+  areaSqft  Decimal? @db.Decimal(18, 4)
+
+  // Rate resolution (FR-212)
+  materialId     String?
+  rateCardId     String?
+  rateSource     RateSource @default(LINE_OVERRIDE)
+  costRate       Decimal?   @db.Decimal(18, 4)
+  markupPct      Decimal    @default(0) @db.Decimal(9, 4)
+  markupMode     MarkupMode @default(MARKUP)
+  /// Selling rate per UOM actually used
+  rate           Decimal    @db.Decimal(18, 4)
+  /// Per-sq.ft or flat add-on for lamination/finishing (FR-221)
+  addOnRate      Decimal    @default(0) @db.Decimal(18, 4)
+  addOnFlat      Decimal    @default(0) @db.Decimal(18, 2)
+
+  // Computed by the engine
+  grossAmount      Decimal @default(0) @db.Decimal(18, 2)
+  minChargeApplied Boolean @default(false)
+  minCharge        Decimal @default(0) @db.Decimal(18, 2)
+  discountPct      Decimal @default(0) @db.Decimal(9, 4)
+  discountAmt      Decimal @default(0) @db.Decimal(18, 2)
+  /// Share of the document-level discount apportioned to this line (FR-214)
+  docDiscountShare Decimal @default(0) @db.Decimal(18, 2)
+  lineTaxable      Decimal @default(0) @db.Decimal(18, 2)
+  gstPct           Decimal @default(0) @db.Decimal(9, 4)
+  cgst             Decimal @default(0) @db.Decimal(18, 2)
+  sgst             Decimal @default(0) @db.Decimal(18, 2)
+  igst             Decimal @default(0) @db.Decimal(18, 2)
+  lineTax          Decimal @default(0) @db.Decimal(18, 2)
+  lineTotal        Decimal @default(0) @db.Decimal(18, 2)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  quote    Quote         @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+  material MaterialItem? @relation(fields: [materialId], references: [id])
+
+  @@unique([quoteId, lineNo])
+  @@index([tenantId])
+  @@index([quoteId])
+  @@map("quote_lines")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §5 — JOBCARD & PRODUCTION
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// FR-306 — per-vertical stage template; jobcards snapshot the stages they start on
+model WorkflowTemplate {
+  id        String   @id @default(uuid())
+  tenantId  String
+  vertical  Vertical
+  name      String
+  isDefault Boolean  @default(false)
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant   Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  stages   WorkflowStage[]
+  jobcards Jobcard[]
+
+  @@index([tenantId])
+  @@map("workflow_templates")
+}
+
+model WorkflowStage {
+  id         String   @id @default(uuid())
+  tenantId   String
+  templateId String
+  name       String
+  sequence   Int
+  department String?
+  isTerminal Boolean  @default(false)
+  createdAt  DateTime @default(now())
+
+  template WorkflowTemplate   @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  progress JobStageProgress[]
+
+  @@unique([templateId, sequence])
+  @@index([tenantId])
+  @@map("workflow_stages")
+}
+
+model Jobcard {
+  id             String    @id @default(uuid())
+  tenantId       String
+  branchId       String
+  fyId           String
+  /// FR-303 — gap-free, FY-resetting, immutable once assigned
+  jobcardNo      String
+  vertical       Vertical
+  customerId     String
+  sourceQuoteId  String?
+  templateId     String
+  title          String?
+  deliveryDate   DateTime
+  priority       Priority  @default(NORMAL)
+  rushFlag       Boolean   @default(false)
+  overallStatus  JobStatus @default(OPEN)
+  /// FR-301 — quick jobcard booked with minimal fields
+  specIncomplete Boolean   @default(false)
+  isQuick        Boolean   @default(false)
+  completedAt    DateTime?
+  notes          String?
+  createdBy      String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  tenant   Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branch   Branch             @relation(fields: [branchId], references: [id])
+  fy       FinancialYear      @relation(fields: [fyId], references: [id])
+  customer Customer           @relation(fields: [customerId], references: [id])
+  quote    Quote?             @relation(fields: [sourceQuoteId], references: [id])
+  template WorkflowTemplate   @relation(fields: [templateId], references: [id])
+  specs    JobcardSpecItem[]
+  progress JobStageProgress[]
+  events   JobEvent[]
+  qrToken  QRToken?
+
+  @@unique([tenantId, jobcardNo])
+  @@index([tenantId])
+  @@index([tenantId, overallStatus])
+  @@index([tenantId, deliveryDate])
+  @@map("jobcards")
+}
+
+model JobcardSpecItem {
+  id           String   @id @default(uuid())
+  tenantId     String
+  jobcardId    String
+  lineNo       Int
+  description  String
+  width        Decimal? @db.Decimal(18, 4)
+  height       Decimal? @db.Decimal(18, 4)
+  unit         String? // ft | inch | mm
+  areaSqft     Decimal? @db.Decimal(18, 4)
+  substrate    String?
+  gsm          Int?
+  colours      String? // 4/0, 4/4, spot
+  sides        Int?
+  quantity     Decimal  @default(1) @db.Decimal(18, 4)
+  finishing    String[]
+  instructions String?
+  /// Carried from the quote line so production/invoicing reuse the quoted figures (FR-233)
+  rate         Decimal? @db.Decimal(18, 4)
+  lineTaxable  Decimal? @db.Decimal(18, 2)
+  gstPct       Decimal? @db.Decimal(9, 4)
+  hsnSac       String?
+  specJson     Json?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  jobcard Jobcard @relation(fields: [jobcardId], references: [id], onDelete: Cascade)
+
+  @@unique([jobcardId, lineNo])
+  @@index([tenantId])
+  @@map("jobcard_spec_items")
+}
+
+model JobStageProgress {
+  id                String      @id @default(uuid())
+  tenantId          String
+  jobcardId         String
+  stageId           String
+  /// Snapshot of the stage as it was when the jobcard started (FR-306)
+  stageName         String
+  sequence          Int
+  department        String?
+  isTerminal        Boolean     @default(false)
+  status            StageStatus @default(PENDING)
+  assignedOperatorId String?
+  startedAt         DateTime?
+  completedAt       DateTime?
+  updatedBy         String?
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
+
+  jobcard  Jobcard       @relation(fields: [jobcardId], references: [id], onDelete: Cascade)
+  stage    WorkflowStage @relation(fields: [stageId], references: [id])
+  operator User?         @relation("StageOperator", fields: [assignedOperatorId], references: [id])
+
+  @@unique([jobcardId, sequence])
+  @@index([tenantId])
+  @@index([tenantId, assignedOperatorId, status])
+  @@map("job_stage_progress")
+}
+
+model JobEvent {
+  id        String       @id @default(uuid())
+  tenantId  String
+  jobcardId String
+  stageId   String?
+  eventType JobEventType
+  fromStage String?
+  toStage   String?
+  oldValue  String?
+  newValue  String?
+  actorId   String?
+  source    EventSource  @default(WEB)
+  note      String?
+  createdAt DateTime     @default(now())
+
+  jobcard Jobcard @relation(fields: [jobcardId], references: [id], onDelete: Cascade)
+  actor   User?   @relation(fields: [actorId], references: [id])
+
+  @@index([tenantId])
+  @@index([jobcardId])
+  @@map("job_events")
+}
+
+/// FR-305 — non-guessable, tenant-scoped, stable for the jobcard's life
+model QRToken {
+  id        String    @id @default(uuid())
+  tenantId  String
+  jobcardId String    @unique
+  token     String    @unique
+  printedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  jobcard Jobcard @relation(fields: [jobcardId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@map("qr_tokens")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §9 — PLATFORM: AUDIT, MESSAGING, SUBSCRIPTION
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// FR-718 / BR-9 — append-only
+model AuditLog {
+  id         String   @id @default(uuid())
+  tenantId   String
+  branchId   String?
+  entityType String
+  entityId   String
+  action     String // CREATE | UPDATE | VOID | DELETE | EXPORT
+  actorId    String?
+  before     Json?
+  after      Json?
+  createdAt  DateTime @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  actor  User?  @relation(fields: [actorId], references: [id])
+
+  @@index([tenantId, entityType, action])
+  @@map("audit_logs")
+}
+
+/// FR-226 — share log for WhatsApp/Email/SMS
+model MessageLog {
+  id         String       @id @default(uuid())
+  tenantId   String
+  channel    ShareChannel
+  toAddress  String
+  templateId String?
+  body       String?
+  entityType String
+  entityId   String
+  quoteId    String?
+  status     String       @default("QUEUED") // QUEUED | SENT | FAILED
+  error      String?
+  sentAt     DateTime?
+  createdAt  DateTime     @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  quote  Quote? @relation(fields: [quoteId], references: [id])
+
+  @@index([tenantId])
+  @@map("message_logs")
+}
+
+/// FR-722..725
+model Plan {
+  id          String   @id @default(uuid())
+  code        String   @unique
+  name        String
+  maxUsers    Int
+  maxBranches Int
+  features    String[]
+  pricePerYear Decimal @default(0) @db.Decimal(18, 2)
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  subscriptions Subscription[]
+
+  @@map("plans")
+}
+
+model Subscription {
+  id           String             @id @default(uuid())
+  tenantId     String             @unique
+  planId       String
+  status       SubscriptionStatus @default(TRIAL)
+  seats        Int                @default(1)
+  trialEndsAt  DateTime?
+  periodStart  DateTime?
+  periodEnd    DateTime?
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  plan   Plan   @relation(fields: [planId], references: [id])
+
+  @@map("subscriptions")
+}

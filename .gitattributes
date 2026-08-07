@@ -1,0 +1,5 @@
+# Normalise to LF in the repository; Git checks out native line endings on Windows.
+* text=auto eol=lf
+
+# Generated — collapse in diffs and reviews.
+package-lock.json linguist-generated=true -diff

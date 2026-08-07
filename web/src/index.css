@@ -1,0 +1,35 @@
+@import 'tailwindcss';
+
+@theme {
+  --color-ink-50: #f2f6fc;
+  --color-ink-100: #e2ebf8;
+  --color-ink-200: #cbdcf3;
+  --color-ink-300: #a7c5ea;
+  --color-ink-400: #7ca6de;
+  --color-ink-500: #5b87d3;
+  --color-ink-600: #476bc6;
+  --color-ink-700: #3d59b5;
+  --color-ink-800: #374b94;
+  --color-ink-900: #314275;
+  --color-ink-950: #212a48;
+}
+
+:root {
+  color-scheme: light;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  @apply bg-slate-100 text-slate-800 antialiased;
+  font-family: ui-sans-serif, system-ui, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+}
+
+/* Tabular figures everywhere money is shown — columns of rupees must line up. */
+.tnum {
+  font-variant-numeric: tabular-nums;
+}
