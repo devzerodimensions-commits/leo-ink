@@ -1,8 +1,24 @@
 # Render blueprint — https://render.com/docs/blueprint-spec
 #
-# Creates two services from this one file:
-#   leo-ink-api  Express API — runs `prisma migrate deploy` on every boot
-#   leo-ink-web  the React build, served as a CDN-backed static site
+#   leo-ink-web  the React build, served as a CDN-backed static site — MANAGED HERE
+#   leo-ink-api  Express API, runs `prisma migrate deploy` on every boot
+#
+# NOTE ON THE API: Render skips creating a service whose `sync: false` env var has
+# no value yet, and a Manual sync never prompts for one (only the very first
+# blueprint deploy does). Since DATABASE_URL has to be supplied by hand anyway,
+# create the API as a normal Web Service in the dashboard with these settings:
+#
+#   Name           leo-ink-api
+#   Region         Singapore          Branch  main       Root directory  (blank)
+#   Runtime        Node
+#   Build command  npm ci && npm run build --workspace server
+#   Start command  npm run start --workspace server
+#   Health check   /api/health
+#   Env            DATABASE_URL, JWT_SECRET, CORS_ORIGIN, NODE_ENV, TRIAL_DAYS
+#                  (values described below)
+#
+# The `services:` entry for it is kept here as the source of truth for those
+# settings, commented out so the blueprint does not try to create it.
 #
 # This repo is an npm workspace, so both services build from the REPO ROOT
 # (`npm ci` once, then `--workspace <name>`). Setting rootDir per service would
@@ -25,33 +41,28 @@
 #
 # Either way `prisma migrate deploy` creates the schema and tables on first boot.
 
-services:
-  # ── API ────────────────────────────────────────────────────────────────────
-  - type: web
-    name: leo-ink-api
-    runtime: node
-    plan: free # spins down after 15 min idle; the next request takes ~50 s to wake
-    region: singapore
-    buildCommand: npm ci && npm run build --workspace server
-    startCommand: npm run start --workspace server
-    healthCheckPath: /api/health
-    envVars:
-      - key: NODE_ENV
-        value: production
-      # Paste this in the Render dashboard — see the note at the top of this file.
-      - key: DATABASE_URL
-        sync: false
-      - key: JWT_SECRET
-        generateValue: true # Render generates it; it is never in the repo
-      - key: TRIAL_DAYS
-        value: "14"
-      # Must be the web app's full origin, scheme included. Render only assigns
-      # this hostname once the site exists, and referencing it here would make the
-      # two services circular — so it is set explicitly. If Render appends a suffix
-      # because the name was taken, correct it in the dashboard and redeploy.
-      - key: CORS_ORIGIN
-        value: https://leo-ink-web.onrender.com
+# ── API — created by hand; kept here as the record of its settings ───────────
+#  - type: web
+#    name: leo-ink-api
+#    runtime: node
+#    plan: free            # spins down after 15 min idle; next request takes ~50 s
+#    region: singapore
+#    buildCommand: npm ci && npm run build --workspace server
+#    startCommand: npm run start --workspace server
+#    healthCheckPath: /api/health
+#    envVars:
+#      - key: NODE_ENV
+#        value: production
+#      - key: DATABASE_URL
+#        sync: false       # your Postgres URL, + ?schema=leoink if it is shared
+#      - key: JWT_SECRET
+#        generateValue: true
+#      - key: TRIAL_DAYS
+#        value: "14"
+#      - key: CORS_ORIGIN
+#        value: https://leo-ink-web.onrender.com   # the web app's full origin
 
+services:
   # ── Web ────────────────────────────────────────────────────────────────────
   - type: web
     name: leo-ink-web
@@ -59,13 +70,13 @@ services:
     buildCommand: npm ci && npm run build --workspace web
     staticPublishPath: web/dist
     envVars:
-      # One-directional reference (web → api), so there is no cycle. Resolves to
-      # https://leo-ink-api.onrender.com; the client appends /api itself.
+      # Set explicitly rather than via `fromService`, because the API is created
+      # by hand (see the note at the top) and a blueprint cannot reference a
+      # service it does not manage. The client appends /api itself.
+      # If the API ends up on a different hostname, change it here — the blueprint
+      # re-syncs on every push and would overwrite a dashboard edit.
       - key: VITE_API_URL
-        fromService:
-          type: web
-          name: leo-ink-api
-          envVarKey: RENDER_EXTERNAL_URL
+        value: https://leo-ink-api.onrender.com
     routes:
       # Single-page app: unknown paths fall through to index.html, otherwise a
       # refresh on /quotes/:id would 404.
