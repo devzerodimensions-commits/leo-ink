@@ -1,0 +1,74 @@
+# Render blueprint — https://render.com/docs/blueprint-spec
+#
+# Creates three things from this one file:
+#   leo-ink-db   PostgreSQL 16
+#   leo-ink-api  Express API — runs `prisma migrate deploy` on every boot
+#   leo-ink-web  the React build, served as a CDN-backed static site
+#
+# This repo is an npm workspace, so both services build from the REPO ROOT
+# (`npm ci` once, then `--workspace <name>`). Setting rootDir per service would
+# install each package in isolation and break the shared lockfile.
+
+databases:
+  - name: leo-ink-db
+    databaseName: leoink
+    user: leoink
+    plan: free # 1 GB, EXPIRES AFTER 30 DAYS — move to a paid plan to keep the data
+    region: singapore # closest Render region to India; services must match
+    postgresMajorVersion: "16"
+
+services:
+  # ── API ────────────────────────────────────────────────────────────────────
+  - type: web
+    name: leo-ink-api
+    runtime: node
+    plan: free # spins down after 15 min idle; the next request takes ~50 s to wake
+    region: singapore
+    buildCommand: npm ci && npm run build --workspace server
+    startCommand: npm run start --workspace server
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: leo-ink-db
+          property: connectionString
+      - key: JWT_SECRET
+        generateValue: true # Render generates it; it is never in the repo
+      - key: TRIAL_DAYS
+        value: "14"
+      # Must be the web app's full origin, scheme included. Render only assigns
+      # this hostname once the site exists, and referencing it here would make the
+      # two services circular — so it is set explicitly. If Render appends a suffix
+      # because the name was taken, correct it in the dashboard and redeploy.
+      - key: CORS_ORIGIN
+        value: https://leo-ink-web.onrender.com
+
+  # ── Web ────────────────────────────────────────────────────────────────────
+  - type: web
+    name: leo-ink-web
+    runtime: static
+    buildCommand: npm ci && npm run build --workspace web
+    staticPublishPath: web/dist
+    envVars:
+      # One-directional reference (web → api), so there is no cycle. Resolves to
+      # https://leo-ink-api.onrender.com; the client appends /api itself.
+      - key: VITE_API_URL
+        fromService:
+          type: web
+          name: leo-ink-api
+          envVarKey: RENDER_EXTERNAL_URL
+    routes:
+      # Single-page app: unknown paths fall through to index.html, otherwise a
+      # refresh on /quotes/:id would 404.
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    headers:
+      - path: /*
+        name: X-Frame-Options
+        value: SAMEORIGIN
+      - path: /assets/*
+        name: Cache-Control
+        value: public, max-age=31536000, immutable

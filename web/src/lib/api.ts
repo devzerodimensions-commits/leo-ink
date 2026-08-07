@@ -1,3 +1,22 @@
+/**
+ * In development Vite proxies `/api` to localhost:4000, so the relative default
+ * is right. In a deployed build the web app and the API are separate origins —
+ * set VITE_API_URL at build time to the API service's URL.
+ *
+ * Accepts it with or without the `/api` suffix, because Render's
+ * RENDER_EXTERNAL_URL hands over a bare origin:
+ *   https://leo-ink-api.onrender.com      → https://leo-ink-api.onrender.com/api
+ *   https://leo-ink-api.onrender.com/api  → unchanged
+ */
+function resolveApiBase(): string {
+  const configured = import.meta.env.VITE_API_URL?.trim();
+  if (!configured) return '/api';
+  const trimmed = configured.replace(/\/+$/, '');
+  return trimmed.endsWith('/api') ? trimmed : `${trimmed}/api`;
+}
+
+const API_BASE = resolveApiBase();
+
 const TOKEN_KEY = 'leoink.token';
 
 export function getToken(): string | null {
@@ -38,7 +57,7 @@ type Method = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 
 async function request<T>(method: Method, path: string, body?: unknown): Promise<T> {
   const token = getToken();
-  const res = await fetch(`/api${path}`, {
+  const res = await fetch(`${API_BASE}${path}`, {
     method,
     headers: {
       ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
