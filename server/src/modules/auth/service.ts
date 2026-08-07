@@ -241,16 +241,20 @@ export async function register(input: z.infer<typeof registerSchema>) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export async function login(input: z.infer<typeof loginSchema>) {
+  // Two round trips, not four. Each one costs a full network hop to the database,
+  // which dominates sign-in when the two are in different regions — so the tenant
+  // is fetched alongside the user rather than after it, and the lastLoginAt write
+  // is not waited on.
   const candidates = await prisma.user.findMany({
     where: {
       email: input.email,
       ...(input.tenantId ? { tenantId: input.tenantId } : {}),
     },
-    include: { branches: true },
+    include: { branches: true, tenant: true },
     orderBy: { createdAt: 'asc' },
   });
 
-  const matches: UserWithBranches[] = [];
+  const matches: Array<UserWithBranches & { tenant: TenantRow }> = [];
   for (const candidate of candidates) {
     if (!candidate.passwordHash) continue;
     if (await bcrypt.compare(input.password, candidate.passwordHash)) matches.push(candidate);
@@ -260,23 +264,21 @@ export async function login(input: z.infer<typeof loginSchema>) {
 
   // FR-715 — "Given a user is disabled, when they attempt to log in, then access
   // is denied while their historical records remain intact."
-  const usable = matches.find((m) => m.status !== 'DISABLED');
-  if (!usable) throw forbidden('This user account has been disabled — contact your administrator');
+  const user = matches.find((m) => m.status !== 'DISABLED');
+  if (!user) throw forbidden('This user account has been disabled — contact your administrator');
 
-  const user = await prisma.user.update({
-    where: { id: usable.id },
-    data: { lastLoginAt: new Date() },
-    include: { branches: true },
-  });
-
-  const tenant = await prisma.tenant.findUniqueOrThrow({ where: { id: user.tenantId } });
+  // Audit-only: nothing in the response depends on it, so it must not delay the
+  // sign-in. A failure here is logged, never surfaced to the user.
+  void prisma.user
+    .update({ where: { id: user.id }, data: { lastLoginAt: new Date() } })
+    .catch((err) => console.error('[leo-ink] could not stamp lastLoginAt:', err));
 
   return {
     token: signToken({ sub: user.id, tenantId: user.tenantId, role: user.role }),
     user: serializeUser(user),
     // FR-715 — the client mirrors these, but the server enforces them on every request.
     permissions: permissionsFor(user.role),
-    tenant: serializeTenant(tenant),
+    tenant: serializeTenant(user.tenant),
     subscription: await subscriptionSummary(user.tenantId),
   };
 }
@@ -286,37 +288,40 @@ export async function login(input: z.infer<typeof loginSchema>) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export async function me(auth: AuthContext) {
-  const [user, tenant] = await Promise.all([
+  // FR-717 — an all-branch user sees every branch; anyone else only their own.
+  // The filter is known from the request's auth context, so the branch list does
+  // not have to wait for the user row — everything goes in one round trip.
+  const branchWhere: Prisma.BranchWhereInput = { tenantId: auth.tenantId, active: true };
+  if (!auth.allBranches) branchWhere.id = { in: auth.branchIds };
+
+  const [user, tenant, branches, subscription] = await Promise.all([
     prisma.user.findFirst({
       where: { id: auth.userId, tenantId: auth.tenantId },
       include: { branches: true },
     }),
     prisma.tenant.findUnique({ where: { id: auth.tenantId } }),
+    prisma.branch.findMany({
+      where: branchWhere,
+      orderBy: [{ isHeadOffice: 'desc' }, { branchCode: 'asc' }],
+      select: {
+        id: true,
+        branchCode: true,
+        name: true,
+        stateCode: true,
+        gstin: true,
+        isHeadOffice: true,
+        active: true,
+      },
+    }),
+    subscriptionSummary(auth.tenantId),
   ]);
   if (!user || !tenant) throw unauthorized();
-
-  // FR-717 — an all-branch user sees every branch; anyone else only their own.
-  const branchWhere: Prisma.BranchWhereInput = { tenantId: auth.tenantId, active: true };
-  if (!auth.allBranches) branchWhere.id = { in: auth.branchIds };
-  const branches = await prisma.branch.findMany({
-    where: branchWhere,
-    orderBy: [{ isHeadOffice: 'desc' }, { branchCode: 'asc' }],
-    select: {
-      id: true,
-      branchCode: true,
-      name: true,
-      stateCode: true,
-      gstin: true,
-      isHeadOffice: true,
-      active: true,
-    },
-  });
 
   return {
     user: serializeUser(user),
     tenant: serializeTenant(tenant),
     branches,
     permissions: permissionsFor(user.role),
-    subscription: await subscriptionSummary(auth.tenantId),
+    subscription,
   };
 }
